@@ -39,8 +39,69 @@ import {
   TextMessagePart,
   ThinkingChatMessage,
   ToolCallDelta,
+  Usage,
 } from "..";
 import { stripImages } from "../util/messageContent";
+
+/**
+ * Maps an OpenAI usage object onto the Continue `Usage` type. Handles both
+ * the Chat Completions shape (`prompt_tokens` / `completion_tokens` /
+ * `prompt_tokens_details.cached_tokens`) and the Responses API shape
+ * (`input_tokens` / `output_tokens` / `input_tokens_details.cached_tokens`).
+ * OpenAI reports cached input tokens in these detail fields and includes them
+ * in the input token count, which `calculateRequestCost` needs to price them
+ * at the discounted cache read rate.
+ */
+export function toOpenAIUsage(usage: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    audio_tokens?: number;
+  };
+  input_tokens_details?: {
+    cached_tokens?: number;
+    audio_tokens?: number;
+  };
+  completion_tokens_details?: {
+    reasoning_tokens?: number;
+    accepted_prediction_tokens?: number;
+    rejected_prediction_tokens?: number;
+    audio_tokens?: number;
+  };
+  output_tokens_details?: {
+    reasoning_tokens?: number;
+    audio_tokens?: number;
+  };
+}): Usage {
+  const promptTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+  const completionTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  const promptDetails =
+    usage.prompt_tokens_details ?? usage.input_tokens_details;
+  const completionDetails =
+    usage.completion_tokens_details ?? usage.output_tokens_details;
+  const acceptedPredictionTokens = (usage.completion_tokens_details as any)
+    ?.accepted_prediction_tokens;
+  const rejectedPredictionTokens = (usage.completion_tokens_details as any)
+    ?.rejected_prediction_tokens;
+
+  return {
+    promptTokens,
+    completionTokens,
+    promptTokensDetails: {
+      cachedTokens: promptDetails?.cached_tokens,
+      audioTokens: promptDetails?.audio_tokens,
+    },
+    completionTokensDetails: {
+      reasoningTokens: completionDetails?.reasoning_tokens,
+      acceptedPredictionTokens,
+      rejectedPredictionTokens,
+      audioTokens: completionDetails?.audio_tokens,
+    },
+  };
+}
 
 function appendReasoningFieldsIfSupported(
   msg: ChatCompletionAssistantMessageParam & {
@@ -318,6 +379,7 @@ export function fromChatResponse(response: ChatCompletion): ChatMessage[] {
   }
 
   // Then add the assistant message
+  const usage = response.usage ? toOpenAIUsage(response.usage) : undefined;
   const toolCall = message.tool_calls?.[0];
   if (toolCall) {
     messages.push({
@@ -333,11 +395,13 @@ export function fromChatResponse(response: ChatCompletion): ChatMessage[] {
             arguments: (tc as any).function?.arguments,
           },
         })),
+      usage,
     });
   } else {
     messages.push({
       role: "assistant",
       content: message.content ?? "",
+      usage,
     });
   }
 
@@ -393,6 +457,17 @@ export function fromChatCompletionChunk(
       reasoning_details: delta?.reasoning_details as any[],
     };
     return message;
+  }
+
+  // Final streaming chunk carries usage when `stream_options.include_usage` is
+  // requested. It has no delta content, so it only exists to feed usage into
+  // the pipeline (cost tracking in the GUI and CLI).
+  if (chunk.usage) {
+    return {
+      role: "assistant" as const,
+      content: "",
+      usage: toOpenAIUsage(chunk.usage),
+    };
   }
 
   return undefined;
@@ -616,6 +691,20 @@ function handleResponsesStreamEvent(
   if (t === "response.reasoning_text.done") {
     return handleReasoningTextDone(e as ResponseReasoningTextDoneEvent);
   }
+  // `response.completed` carries the final usage for the stream; it has no
+  // content, so it only feeds usage into the pipeline.
+  if (t === "response.completed") {
+    const completed = e as any as {
+      response?: { usage?: Parameters<typeof toOpenAIUsage>[0] };
+    };
+    if (completed.response?.usage) {
+      return {
+        role: "assistant" as const,
+        content: "",
+        usage: toOpenAIUsage(completed.response.usage),
+      };
+    }
+  }
   return undefined;
 }
 
@@ -720,12 +809,29 @@ function handleResponsesFinal(
         continue;
       }
     }
-    if (result.length > 0) return result;
+    if (result.length > 0) {
+      // Attach usage to the final assistant message so cost tracking works for
+      // non-streaming Responses API calls.
+      if (resp.usage && result.length > 0) {
+        const last = result[result.length - 1];
+        if (last.role === "assistant") {
+          last.usage = toOpenAIUsage(resp.usage);
+        }
+      }
+      return result;
+    }
   }
 
   // Fallback to output_text when no structured output is present
   if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
-    return { role: "assistant", content: resp.output_text };
+    const assistant: AssistantChatMessage = {
+      role: "assistant",
+      content: resp.output_text,
+    };
+    if (resp.usage) {
+      assistant.usage = toOpenAIUsage(resp.usage);
+    }
+    return assistant;
   }
 
   return undefined;

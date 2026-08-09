@@ -1,4 +1,11 @@
-import { toResponsesInput, isItemType } from "./openaiTypeConverters";
+import {
+  toResponsesInput,
+  isItemType,
+  fromChatResponse,
+  fromChatCompletionChunk,
+  fromResponsesChunk,
+  toOpenAIUsage,
+} from "./openaiTypeConverters";
 import { ChatMessage } from "..";
 import type {
   EasyInputMessage,
@@ -845,6 +852,122 @@ describe("openaiTypeConverters", () => {
         const devMessages = getMessagesByRole(result, "developer");
         expect(devMessages.length).toBe(1);
       });
+    });
+  });
+
+  describe("usage attachment", () => {
+    it("toOpenAIUsage maps Chat Completions usage including cached tokens", () => {
+      const usage = toOpenAIUsage({
+        prompt_tokens: 1000,
+        completion_tokens: 500,
+        prompt_tokens_details: { cached_tokens: 400 },
+        completion_tokens_details: { reasoning_tokens: 100 },
+      });
+
+      expect(usage.promptTokens).toBe(1000);
+      expect(usage.completionTokens).toBe(500);
+      expect(usage.promptTokensDetails?.cachedTokens).toBe(400);
+      expect(usage.completionTokensDetails?.reasoningTokens).toBe(100);
+    });
+
+    it("toOpenAIUsage maps Responses API usage shape", () => {
+      const usage = toOpenAIUsage({
+        input_tokens: 2000,
+        output_tokens: 300,
+        input_tokens_details: { cached_tokens: 1500 },
+        output_tokens_details: { reasoning_tokens: 50 },
+      });
+
+      expect(usage.promptTokens).toBe(2000);
+      expect(usage.completionTokens).toBe(300);
+      expect(usage.promptTokensDetails?.cachedTokens).toBe(1500);
+      expect(usage.completionTokensDetails?.reasoningTokens).toBe(50);
+    });
+
+    it("fromChatResponse attaches usage to the assistant message", () => {
+      const messages = fromChatResponse({
+        id: "chatcmpl-test",
+        object: "chat.completion",
+        created: 1,
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Hello" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 500,
+          total_tokens: 1500,
+          prompt_tokens_details: { cached_tokens: 400 },
+        },
+      } as any);
+
+      const assistant = messages[messages.length - 1];
+      expect(assistant.role).toBe("assistant");
+      expect(assistant.usage?.promptTokens).toBe(1000);
+      expect(assistant.usage?.promptTokensDetails?.cachedTokens).toBe(400);
+    });
+
+    it("fromChatCompletionChunk yields usage on the final chunk", () => {
+      const chunk = fromChatCompletionChunk({
+        id: "chatcmpl-test",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-4o",
+        choices: [],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 500,
+          total_tokens: 1500,
+          prompt_tokens_details: { cached_tokens: 600 },
+        },
+      } as any);
+
+      expect(chunk?.role).toBe("assistant");
+      expect(chunk?.usage?.promptTokens).toBe(1000);
+      expect(chunk?.usage?.promptTokensDetails?.cachedTokens).toBe(600);
+    });
+
+    it("fromResponsesChunk attaches usage on response.completed", () => {
+      const msg = fromResponsesChunk({
+        type: "response.completed",
+        response: {
+          id: "resp_test",
+          usage: {
+            input_tokens: 2000,
+            output_tokens: 300,
+            input_tokens_details: { cached_tokens: 1800 },
+          },
+        },
+      } as any);
+
+      expect(msg?.role).toBe("assistant");
+      expect(msg?.usage?.promptTokens).toBe(2000);
+      expect(msg?.usage?.promptTokensDetails?.cachedTokens).toBe(1800);
+    });
+
+    it("fromResponsesChunk attaches usage on a final Responses response", () => {
+      const msg = fromResponsesChunk({
+        id: "resp_test",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "o3-mini",
+        output_text: "Hello from o3",
+        usage: {
+          input_tokens: 2000,
+          output_tokens: 300,
+          input_tokens_details: { cached_tokens: 1900 },
+        },
+      } as any);
+
+      expect(msg?.role).toBe("assistant");
+      expect(msg?.content).toBe("Hello from o3");
+      expect(msg?.usage?.promptTokens).toBe(2000);
+      expect(msg?.usage?.promptTokensDetails?.cachedTokens).toBe(1900);
     });
   });
 });

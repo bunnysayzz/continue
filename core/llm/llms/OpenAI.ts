@@ -439,6 +439,14 @@ class OpenAI extends BaseLLM {
   ): ChatCompletionCreateParams {
     body.stop = body.stop?.slice(0, this.getMaxStopWords());
 
+    // Request usage in the final streamed chunk so OpenAI cost tracking works.
+    // Only for the OpenAI provider itself: Azure gates this behind an
+    // api-version, and the OpenAI-compatible providers (Fireworks, Groq,
+    // DeepSeek, etc.) extend this class with their own providerName.
+    if (this.providerName === "openai" && body.stream !== false) {
+      body.stream_options = { include_usage: true };
+    }
+
     // OpenAI o1-preview and o1-mini or o3-mini:
     if (this.isOSeriesOrGpt5PlusModel(body.model)) {
       // a) use max_completion_tokens instead of max_tokens
