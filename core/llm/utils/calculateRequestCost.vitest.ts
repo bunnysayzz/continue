@@ -163,6 +163,45 @@ describe("calculateRequestCost", () => {
       description: "GPT-3.5 Turbo",
     },
 
+    // OpenAI cached input (cached tokens billed at the cache read rate)
+    {
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 1000,
+      completionTokens: 500,
+      cachedTokens: 400,
+      expectedCost: 0.007,
+      description: "GPT-4o with cached input tokens",
+    },
+    {
+      provider: "openai",
+      model: "gpt-4o-mini",
+      promptTokens: 1000,
+      completionTokens: 500,
+      cachedTokens: 400,
+      expectedCost: 0.00042,
+      description: "GPT-4o-mini with cached input tokens",
+    },
+    {
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 1000,
+      completionTokens: 0,
+      cachedTokens: 1000,
+      expectedCost: 0.00125,
+      description: "GPT-4o fully cached input",
+    },
+    {
+      provider: "openai",
+      model: "gpt-4o",
+      promptTokens: 1000,
+      completionTokens: 500,
+      cachedTokens: 1500,
+      expectedCost: 0.006875,
+      description:
+        "GPT-4o cached tokens exceeding prompt tokens stays non-negative",
+    },
+
     // Edge cases
     {
       provider: "anthropic",

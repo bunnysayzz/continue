@@ -156,21 +156,24 @@ function calculateOpenAICost(
   const normalizedModel = model.toLowerCase();
 
   // Define pricing per million tokens (MTok) by model family prefix
-  const pricing: Record<string, { input: number; output: number }> = {
+  const pricing: Record<
+    string,
+    { input: number; output: number; cachedInput: number }
+  > = {
     // GPT-4o models (most specific first)
-    "gpt-4o-mini": { input: 0.15, output: 0.6 },
-    "gpt-4o": { input: 2.5, output: 10 },
+    "gpt-4o-mini": { input: 0.15, output: 0.6, cachedInput: 0.075 },
+    "gpt-4o": { input: 2.5, output: 10, cachedInput: 1.25 },
 
     // GPT-4 Turbo models
-    "gpt-4-turbo": { input: 10, output: 30 },
+    "gpt-4-turbo": { input: 10, output: 30, cachedInput: 5 },
 
     // GPT-3.5 Turbo models (most specific first)
-    "gpt-3.5-turbo-0125": { input: 0.5, output: 1.5 },
-    "gpt-3.5-turbo-1106": { input: 1, output: 2 },
-    "gpt-3.5-turbo": { input: 1.5, output: 2 },
+    "gpt-3.5-turbo-0125": { input: 0.5, output: 1.5, cachedInput: 0.25 },
+    "gpt-3.5-turbo-1106": { input: 1, output: 2, cachedInput: 0.5 },
+    "gpt-3.5-turbo": { input: 1.5, output: 2, cachedInput: 0.75 },
 
     // Base GPT-4 (fallback for other gpt-4 variants)
-    "gpt-4": { input: 30, output: 60 },
+    "gpt-4": { input: 30, output: 60, cachedInput: 15 },
   };
 
   // Sort keys by length (longest first) to match most specific patterns first
@@ -188,16 +191,27 @@ function calculateOpenAICost(
     return null; // Unknown model
   }
 
-  // Calculate costs
-  const inputCost = (usage.promptTokens / 1_000_000) * modelPricing.input;
+  // OpenAI reports cached input tokens as promptTokensDetails.cachedTokens,
+  // and prompt_tokens includes them. Cached tokens are billed at a discounted
+  // rate, so split them out like the Anthropic branch does.
+  const cachedTokens = usage.promptTokensDetails?.cachedTokens ?? 0;
+  const uncachedInput = Math.max(0, usage.promptTokens - cachedTokens);
+  const inputCost = (uncachedInput / 1_000_000) * modelPricing.input;
+  const cachedInputCost = (cachedTokens / 1_000_000) * modelPricing.cachedInput;
   const outputCost = (usage.completionTokens / 1_000_000) * modelPricing.output;
 
   // Build breakdown components
   const breakdownParts: string[] = [];
 
-  if (usage.promptTokens > 0) {
+  if (uncachedInput > 0) {
     breakdownParts.push(
-      `Input: ${usage.promptTokens.toLocaleString()} tokens × $${modelPricing.input}/MTok = $${inputCost.toFixed(6)}`,
+      `Input: ${uncachedInput.toLocaleString()} tokens × $${modelPricing.input}/MTok = $${inputCost.toFixed(6)}`,
+    );
+  }
+
+  if (cachedTokens > 0) {
+    breakdownParts.push(
+      `Cache Read: ${cachedTokens.toLocaleString()} tokens × $${modelPricing.cachedInput}/MTok = $${cachedInputCost.toFixed(6)}`,
     );
   }
 
@@ -207,7 +221,7 @@ function calculateOpenAICost(
     );
   }
 
-  const totalCost = inputCost + outputCost;
+  const totalCost = inputCost + cachedInputCost + outputCost;
 
   // Build final breakdown string
   let breakdown = `Model: ${model}\n`;
