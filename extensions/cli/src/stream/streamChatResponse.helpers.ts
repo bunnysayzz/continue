@@ -294,18 +294,30 @@ export function recordStreamTelemetry(options: {
   let cost: number;
   let usage: Usage;
 
+  // Cached input token fields differ by provider: OpenAI reports
+  // prompt_tokens_details.cached_tokens, Anthropic reports
+  // cache_read_input_tokens at the top level. Accept both shapes so cached
+  // tokens are priced at the discounted cache read rate instead of the full
+  // input rate. Same for cache writes (cache_creation_input_tokens on
+  // Anthropic).
+  const promptDetails = fullUsage?.prompt_tokens_details ?? {};
+  const cacheReadTokens =
+    promptDetails.cached_tokens ??
+    promptDetails.cache_read_tokens ??
+    fullUsage?.cache_read_input_tokens;
+  const cacheWriteTokens =
+    promptDetails.cache_write_tokens ?? fullUsage?.cache_creation_input_tokens;
+
   if (fullUsage) {
     // Transform API usage format to Usage interface
     usage = {
-      promptTokens: fullUsage.prompt_tokens,
-      completionTokens: fullUsage.completion_tokens,
-      promptTokensDetails: fullUsage.prompt_tokens_details
-        ? {
-            cachedTokens: fullUsage.prompt_tokens_details.cache_read_tokens,
-            cacheWriteTokens:
-              fullUsage.prompt_tokens_details.cache_write_tokens,
-          }
-        : undefined,
+      promptTokens: fullUsage.prompt_tokens ?? fullUsage.input_tokens ?? 0,
+      completionTokens:
+        fullUsage.completion_tokens ?? fullUsage.output_tokens ?? 0,
+      promptTokensDetails:
+        cacheReadTokens !== undefined || cacheWriteTokens !== undefined
+          ? { cachedTokens: cacheReadTokens, cacheWriteTokens }
+          : undefined,
     };
 
     // Detect provider and calculate cost
@@ -316,8 +328,8 @@ export function recordStreamTelemetry(options: {
     cost =
       costBreakdown?.cost ??
       calculateFallbackCost(
-        fullUsage.prompt_tokens,
-        fullUsage.completion_tokens,
+        fullUsage.prompt_tokens ?? fullUsage.input_tokens ?? 0,
+        fullUsage.completion_tokens ?? fullUsage.output_tokens ?? 0,
       );
   } else {
     // Fallback when fullUsage not available
@@ -336,16 +348,16 @@ export function recordStreamTelemetry(options: {
   telemetryService.recordTokenUsage(actualOutputTokens, "output", model.model);
 
   // Record cache tokens if available
-  if (fullUsage?.prompt_tokens_details?.cache_read_tokens) {
+  if (cacheReadTokens) {
     telemetryService.recordTokenUsage(
-      fullUsage.prompt_tokens_details.cache_read_tokens,
+      cacheReadTokens,
       "cacheRead",
       model.model,
     );
   }
-  if (fullUsage?.prompt_tokens_details?.cache_write_tokens) {
+  if (cacheWriteTokens) {
     telemetryService.recordTokenUsage(
-      fullUsage.prompt_tokens_details.cache_write_tokens,
+      cacheWriteTokens,
       "cacheCreation",
       model.model,
     );
